@@ -69,3 +69,14 @@ class Decision(BaseModel):
 
 class ThresholdInput(Decision):
     floor: Decimal = Field(ge=Decimal('.500'), le=Decimal('.990'), decimal_places=3)
+
+
+class ModelCompareInput(BaseModel):
+    n_estimators: int = Field(ge=10, le=400)
+    max_depth: int = Field(ge=1, le=6)
+    learning_rate: float = Field(gt=0, le=1)
+    random_state: int = Field(ge=0, le=9999)
+
+    def parameters(self):
+        return {'n_estimators': self.n_estimators, 'max_depth': self.max_depth,
+                'learning_rate': self.learning_rate, 'random_state': self.random_state}

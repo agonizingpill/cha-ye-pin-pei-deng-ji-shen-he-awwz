@@ -4,9 +4,10 @@ export const REVIEW = {queued: '排队计算', failed: '计算失败', repanel: 
 export const GRADE = {selection: '精选级', standard: '标准级', secondary: '复配级'};
 export const LOT = {awaiting_panel: '待感官评审', awaiting_sample: '待留样', ready: '可用于拼配'};
 export const SCORES = {aroma: '香气', body: '汤体', sweetness: '回甘', leaf: '叶底', defect: '杂味扣分'};
+export const MODEL_STATE = {active: '现用', candidate: '候选', retired: '已替换'};
 
 const key = 'tea-room-session';
-export const store = {session: JSON.parse(sessionStorage.getItem(key) || 'null'), lots: [], blends: [], thresholds: []};
+export const store = {session: JSON.parse(sessionStorage.getItem(key) || 'null'), lots: [], blends: [], thresholds: [], models: []};
 export function setSession(session) {
   store.session = session;
   if (session) sessionStorage.setItem(key, JSON.stringify(session));

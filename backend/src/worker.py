@@ -8,12 +8,16 @@ from sqlalchemy.exc import SQLAlchemyError
 from .constants import ReviewState as State
 from .db import QUEUE, redis, transaction
 from .grade_model import digest, run
-from .models import GradeReview
+from .models import GradeModel, GradeReview
 from .workflow import record
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
 heartbeat = Path('/work/worker.touch')
+
+
+class ModelUnavailable(LookupError):
+    """审核单冻结的模型版本取不到，保留原模型留在待重试。"""
 
 
 def consume(review_id=None):
@@ -28,7 +32,10 @@ def consume(review_id=None):
         try:
             if digest(review.snapshot) != review.digest:
                 raise ValueError('冻结快照摘要不匹配')
-            review.result = run(review.snapshot)
+            model = db.get(GradeModel, review.model_id) if review.model_id else None
+            if model is None:
+                raise ModelUnavailable(f'送审时的模型版本 #{review.model_id} 取不到，未换用其他模型')
+            review.result = run(review.snapshot, model)
             review.state = State.REPANEL if review.result['needs_repanel'] else State.VERIFY
             detail = f'{review.digest} · {review.state} · {review.result["confidence"]:.6f}'
         except Exception as exc:

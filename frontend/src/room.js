@@ -7,7 +7,7 @@ import {samples} from './pages/samples.js';
 const rooms = {
   lots: {label: '原料批次', render: intake, keys: ['lots']},
   sensory: {label: '感官评审', render: sensory, keys: ['lots']},
-  blends: {label: '拼配审核', render: blends, keys: ['lots', 'blends', 'thresholds']},
+  blends: {label: '拼配审核', render: blends, keys: ['lots', 'blends', 'thresholds', 'models']},
   samples: {label: '留样封存', render: samples, keys: ['lots', 'blends']}
 };
 const root = document.querySelector('#room');

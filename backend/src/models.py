@@ -63,12 +63,32 @@ class ThresholdPolicy(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class GradeModel(Base):
+    __tablename__ = 'grade_model'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    label: Mapped[str] = mapped_column(String(60), unique=True)
+    parameters: Mapped[dict] = mapped_column(JSON)
+    metrics: Mapped[dict] = mapped_column(JSON)
+    comparison: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
+    compared_against_id: Mapped[int | None] = mapped_column(ForeignKey('grade_model.id'))
+    author_id: Mapped[int] = mapped_column(ForeignKey('tea_user.id'))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class ModelState(Base):
+    __tablename__ = 'grade_model_state'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    active_model_id: Mapped[int] = mapped_column(ForeignKey('grade_model.id'))
+
+
 class GradeReview(Base):
     __tablename__ = 'grade_review'
     id: Mapped[int] = mapped_column(primary_key=True)
     recipe_id: Mapped[int] = mapped_column(ForeignKey('blend_recipe.id'))
     revision: Mapped[int]
     threshold_id: Mapped[int] = mapped_column(ForeignKey('grade_threshold.id'))
+    model_id: Mapped[int | None] = mapped_column(ForeignKey('grade_model.id'))
     state: Mapped[str] = mapped_column(String(20), index=True)
     snapshot: Mapped[dict] = mapped_column(JSON)
     digest: Mapped[str] = mapped_column(String(64))

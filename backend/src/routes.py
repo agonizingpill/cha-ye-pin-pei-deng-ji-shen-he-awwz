@@ -6,7 +6,7 @@ from . import present, schemas as s, workflow as flow
 from .auth import actor, issue, matches, permits
 from .constants import ReviewState as State, Role
 from .db import get_db
-from .models import Audit, BlendRecipe, GradeReview, RetainedSample, SensoryPanel, TeaLot, ThresholdPolicy, User
+from .models import Audit, BlendRecipe, GradeModel, GradeReview, ModelState, RetainedSample, SensoryPanel, TeaLot, ThresholdPolicy, User
 
 router = APIRouter()
 reader = Depends(actor)
@@ -163,6 +163,34 @@ def retain_blend(key: int, data: s.SampleInput, user: User = sealer, db: Session
 @router.get('/thresholds')
 def thresholds(user: User = reader, db: Session = database):
     return [present.policy_out(row, db) for row in db.scalars(select(ThresholdPolicy).order_by(ThresholdPolicy.id.desc()))]
+
+
+@router.get('/models')
+def models(user: User = reader, db: Session = database):
+    state = db.get(ModelState, 1)
+    active_id = state.active_model_id if state else None
+    return [present.model_out(row, db, active_id) for row in db.scalars(select(GradeModel).order_by(GradeModel.id.desc()))]
+
+
+@router.post('/models/compare', status_code=201)
+def compare_model(data: s.ModelCompareInput, user: User = supervisor, db: Session = database):
+    row = flow.compare_model(db, data.parameters(), user)
+    db.commit()
+    return present.model_out(row, db, row.compared_against_id)
+
+
+@router.post('/models/{key}/compare')
+def recompare_model(key: int, user: User = supervisor, db: Session = database):
+    row = flow.recompare_model(db, flow.require(db, GradeModel, key, lock=True), user)
+    db.commit()
+    return present.model_out(row, db, row.compared_against_id)
+
+
+@router.post('/models/{key}/publish')
+def publish_model(key: int, user: User = supervisor, db: Session = database):
+    row = flow.publish_model(db, key, user)
+    db.commit()
+    return present.model_out(row, db, row.id)
 
 
 @router.post('/thresholds', status_code=201)

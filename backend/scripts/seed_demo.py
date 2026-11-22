@@ -1,12 +1,14 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
 
 from src.auth import password_hash
-from src.constants import ATTRIBUTES, Role
+from src.constants import ATTRIBUTES, MODEL_VERSION, Role
 from src.db import Base, engine, transaction
-from src.models import BlendRecipe, BlendShare, GradeReview, RetainedSample, SensoryPanel, TeaLot, ThresholdPolicy, User
+from src.grade_model import DEFAULT_PARAMETERS, fit
+from src.models import (BlendRecipe, BlendShare, GradeModel, GradeReview, ModelState, RetainedSample,
+                        SensoryPanel, TeaLot, ThresholdPolicy, User)
 from src.workflow import freeze, wake
 
 ACCOUNTS = {'lin': ('林苇', Role.OPERATOR), 'he': ('何栀', Role.OPERATOR),
@@ -37,6 +39,15 @@ def seed():
                 db.flush()
             accounts[username] = user
         lin, he, xu = (accounts[key].id for key in ('lin', 'he', 'xu'))
+        model = db.scalar(select(GradeModel).filter_by(label=MODEL_VERSION))
+        if model is None:
+            _, metrics = fit(DEFAULT_PARAMETERS)
+            model = GradeModel(label=MODEL_VERSION, parameters=DEFAULT_PARAMETERS, metrics=metrics,
+                               author_id=xu, published_at=datetime.now(timezone.utc).replace(tzinfo=None))
+            db.add(model)
+            db.flush()
+        if db.get(ModelState, 1) is None:
+            db.add(ModelState(id=1, active_model_id=model.id))
         if db.get(ThresholdPolicy, 1) is None:
             db.add(ThresholdPolicy(id=1, floor=Decimal('.900'), reason='首班交界样保守复评线', author_id=xu))
         lot_ids = []

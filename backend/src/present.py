@@ -3,7 +3,7 @@ from datetime import timezone
 from sqlalchemy import select
 
 from .constants import ATTRIBUTES, ReviewState
-from .models import SensoryPanel, User
+from .models import GradeModel, SensoryPanel, User
 from .workflow import lot_state, sample_for
 
 
@@ -39,8 +39,11 @@ def review_out(row, db):
     if row.state == ReviewState.REPANEL:
         result = {key: result[key] for key in ('confidence', 'effective_threshold', 'calibrated_floor',
                                                 'model', 'seed', 'input_digest', 'validation')}
+    snapshot = row.snapshot or {}
+    model_version = snapshot.get('model_version') or (result or {}).get('model')
     return {'id': row.id, 'revision': row.revision, 'state': row.state, 'failure': row.failure,
             'snapshot': row.snapshot, 'digest': row.digest, 'result': result, 'attempts': row.attempts,
+            'model_id': row.model_id, 'model_version': model_version,
             'verified_by': db.get(User, row.verified_by).name if row.verified_by else None,
             'signed_by': db.get(User, row.signed_by).name if row.signed_by else None,
             'final_grade': row.final_grade if row.signed_by else None,
@@ -59,3 +62,19 @@ def recipe_out(row, db):
 def policy_out(row, db):
     return {'id': row.id, 'floor': str(row.floor), 'reason': row.reason,
             'author': db.get(User, row.author_id).name, 'created_at': iso(row.created_at)}
+
+
+def model_out(row, db, active_id):
+    if row.id == active_id:
+        state = 'active'
+    elif row.published_at is not None:
+        state = 'retired'
+    else:
+        state = 'candidate'
+    compared = db.get(GradeModel, row.compared_against_id) if row.compared_against_id else None
+    return {'id': row.id, 'label': row.label, 'state': state, 'parameters': row.parameters,
+            'metrics': row.metrics, 'comparison': row.comparison,
+            'compared_against': compared.label if compared else None,
+            'stale': state == 'candidate' and row.compared_against_id != active_id,
+            'author': db.get(User, row.author_id).name, 'created_at': iso(row.created_at),
+            'published_at': iso(row.published_at) if row.published_at else None}

@@ -1,5 +1,7 @@
 import logging
+from datetime import datetime, timezone
 from decimal import Decimal
+from uuid import uuid4
 
 from fastapi import HTTPException
 from redis import RedisError
@@ -7,8 +9,9 @@ from sqlalchemy import select
 
 from .constants import ATTRIBUTES, ReviewState as State
 from .db import QUEUE, redis
-from .grade_model import digest
-from .models import Audit, BlendRecipe, BlendShare, GradeReview, RetainedSample, SensoryPanel, TeaLot, ThresholdPolicy
+from .grade_model import digest, fit
+from .models import (Audit, BlendRecipe, BlendShare, GradeModel, GradeReview, ModelState, RetainedSample,
+                    SensoryPanel, TeaLot, ThresholdPolicy)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,65 @@ def latest_policy(db):
     return policy
 
 
+def current_model(db, lock=False):
+    state = db.get(ModelState, 1, with_for_update=lock)
+    model = db.get(GradeModel, state.active_model_id) if state else None
+    if model is None:
+        raise HTTPException(409, '请主管先发布判级模型版本')
+    return model
+
+
+def comparison_record(incumbent, candidate_metrics):
+    return {'incumbent_id': incumbent.id, 'incumbent_label': incumbent.label,
+            'incumbent_metrics': incumbent.metrics, 'candidate_metrics': candidate_metrics,
+            'calibration_rows': candidate_metrics['validation_rows'],
+            'passed': bool(candidate_metrics.get('calibrated')),
+            'compared_at': datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')}
+
+
+def compare_model(db, parameters, user):
+    incumbent = current_model(db)
+    _, metrics = fit(parameters)
+    row = GradeModel(label=f'pending-{uuid4().hex[:16]}', parameters=parameters, metrics=metrics,
+                     compared_against_id=incumbent.id, comparison=comparison_record(incumbent, metrics),
+                     author_id=user.id)
+    db.add(row)
+    db.flush()
+    row.label = f'wuyi-panel-v{row.id}'
+    verdict = '校准达标' if metrics['calibrated'] else '校准未达标'
+    record(db, user, 'model.compare', row.label, f'对照 {incumbent.label} · {verdict} · {parameters}')
+    return row
+
+
+def recompare_model(db, row, user):
+    if row.published_at is not None:
+        raise HTTPException(409, '已发布的模型版本无需重新比较')
+    incumbent = current_model(db)
+    _, metrics = fit(row.parameters)
+    row.metrics = metrics
+    row.compared_against_id = incumbent.id
+    row.comparison = comparison_record(incumbent, metrics)
+    record(db, user, 'model.recompare', row.label, f'对照 {incumbent.label}')
+    return row
+
+
+def publish_model(db, key, user):
+    state = db.get(ModelState, 1, with_for_update=True)
+    if state is None:
+        raise HTTPException(409, '请主管先发布判级模型版本')
+    row = require(db, GradeModel, key, lock=True)
+    if row.id == state.active_model_id:
+        raise HTTPException(409, '该模型版本正在生效')
+    if not row.metrics.get('calibrated'):
+        raise HTTPException(409, '候选模型校准未达标，不能发布')
+    if row.compared_against_id != state.active_model_id:
+        raise HTTPException(409, '现用模型已更换，请用同一批校准样本重新比较后再发布')
+    row.published_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    state.active_model_id = row.id
+    record(db, user, 'model.publish', row.label, f'参数 {row.parameters}')
+    return row
+
+
 def freeze(db, recipe):
     total = sum((share.percent for share in recipe.shares), Decimal('0'))
     if total != Decimal('100.00'):
@@ -72,10 +134,12 @@ def freeze(db, recipe):
         ingredients.append({'lot': lot.code, 'percent': str(share.percent), 'seal': sample.seal,
                             'panel_id': panel.id, 'scores': {key: getattr(panel, key) for key in ATTRIBUTES}})
     policy = latest_policy(db)
+    model = current_model(db, lock=True)
     snapshot = {'code': recipe.code, 'revision': recipe.revision, 'ingredients': ingredients,
-                'policy_version': policy.id, 'policy_floor': str(policy.floor)}
+                'policy_version': policy.id, 'policy_floor': str(policy.floor),
+                'model_id': model.id, 'model_version': model.label}
     return GradeReview(recipe_id=recipe.id, revision=recipe.revision, threshold_id=policy.id,
-                       state=State.QUEUED, snapshot=snapshot, digest=digest(snapshot))
+                       model_id=model.id, state=State.QUEUED, snapshot=snapshot, digest=digest(snapshot))
 
 
 def wake(review_id):

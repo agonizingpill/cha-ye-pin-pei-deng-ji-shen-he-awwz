@@ -1,5 +1,5 @@
-import {esc, field, formData, formEnd, handle, header, memo, panelData, panelFields, panelStrip, percent, status} from '../components.js';
-import {GRADE, request, store} from '../store.js';
+import {datetime, esc, field, formData, formEnd, handle, header, memo, panelData, panelFields, panelStrip, percent, status} from '../components.js';
+import {GRADE, MODEL_STATE, request, store} from '../store.js';
 
 function shareRow(row = {}) {
   return `<div class="share-row"><label>原料批次<select name="lot" required><option value="">选择原料</option>
@@ -52,9 +52,13 @@ function formDataFrom(row) {
 
 function evidence(review) {
   const evidence = review.result;
-  if (!evidence) return `<p class="empty">${review.state === 'failed' ? esc(review.failure) : '计算排队中，完成后显示复评决定。'}</p>`;
-  return `<section class="evidence"><h3>模型判级依据</h3><div class="calibration-line">
-    <span>最高置信度 <strong>${percent(evidence.confidence)}</strong></span><span>生效阈值 <strong>${percent(evidence.effective_threshold)}</strong></span><span>阈值 v${review.snapshot.policy_version}</span></div>
+  const meta = `<div class="calibration-line"><span>审核模型 <strong>${esc(review.model_version || '未记录')}</strong></span>
+    <span>阈值 v${review.snapshot.policy_version}</span>${review.attempts ? `<span>计算尝试 ${review.attempts} 次</span>` : ''}</div>
+    ${review.failure ? `<p class="empty error">失败原因：${esc(review.failure)}</p>` : ''}`;
+  if (!evidence) return `<section class="evidence"><h3>模型判级依据</h3>${meta}
+    ${review.state === 'failed' ? '' : '<p class="empty">计算排队中，完成后显示复评决定。</p>'}</section>`;
+  return `<section class="evidence"><h3>模型判级依据</h3>${meta}<div class="calibration-line">
+    <span>最高置信度 <strong>${percent(evidence.confidence)}</strong></span><span>生效阈值 <strong>${percent(evidence.effective_threshold)}</strong></span></div>
     ${evidence.probabilities ? `<div class="grade-bars">${Object.entries(GRADE).map(([key, label]) => `<div><span>${label}</span>
       <meter min="0" max="1" value="${evidence.probabilities[key]}">${percent(evidence.probabilities[key])}</meter><strong>${percent(evidence.probabilities[key])}</strong></div>`).join('')}</div>` :
       '<p class="muted">完成盲复评后显示各等级概率。</p>'}
@@ -99,7 +103,7 @@ function blendDetail(blend) {
 function policy(root, refresh) {
   const editable = store.session.user.role === 'supervisor';
   root.innerHTML = `${header('判级阈值版本', '新版本在下次送审时生效。已排队及已签发审核保留原版本。',
-    '<a class="button quiet" href="#/blends">返回拼配台账</a>')}
+    `<div class="header-actions"><a class="button quiet" href="#/blends/models">模型版本</a><a class="button quiet" href="#/blends">返回拼配台账</a></div>`)}
     <div class="work-grid"><section class="paper"><h2>发布记录</h2><ul class="policies">${store.thresholds.map(row =>
       `<li><span class="mono">V${row.id}</span><strong>${percent(row.floor)}</strong><span>${esc(row.reason)} <small>${esc(row.author)}</small></span></li>`).join('') || '<li>等待主管发布首个阈值。</li>'}</ul></section>
       ${editable ? `<form id="policy-form" class="paper form-stack"><h2>发布新阈值</h2><p class="muted">最终生效值取策略阈值和验证集校准值中的较高值。</p>
@@ -108,14 +112,68 @@ function policy(root, refresh) {
   if (form) handle(form, item => request('/thresholds', formData(item)), () => refresh('新版阈值已发布。'));
 }
 
+function metricLine(metrics) {
+  return `<div class="calibration-line"><span>校准 <strong>${metrics.calibrated ? '达标' : '未达标'}</strong></span>
+    <span>验证准确率 <strong>${percent(metrics.accuracy)}</strong></span>
+    ${metrics.calibrated ? `<span>保留覆盖率 <strong>${percent(metrics.coverage)}</strong></span>
+    <span>保留集正确率 <strong>${percent(metrics.accepted_accuracy)}</strong></span>
+    <span>校准阈值 <strong>${percent(metrics.calibrated_floor)}</strong></span>` : ''}
+    <span>训练 ${metrics.training_rows} 条 / 校准 ${metrics.validation_rows} 条</span></div>`;
+}
+
+function modelRow(row, editable) {
+  const metrics = row.metrics || {};
+  const comparison = row.comparison;
+  const candidate = comparison?.candidate_metrics || {};
+  const incumbent = comparison?.incumbent_metrics || {};
+  return `<li class="model-entry"><div class="blend-heading"><div><span class="mono">${esc(row.label)}</span>
+    <span class="status ${row.state === 'active' ? 'good' : row.state === 'candidate' ? 'warn' : ''}">${MODEL_STATE[row.state]}</span></div>
+    <small>${esc(row.author)} · ${datetime(row.created_at)}${row.published_at ? ` · 发布于 ${datetime(row.published_at)}` : ''}</small></div>
+    ${metricLine(metrics)}
+    ${comparison ? `<p class="muted">与现用 ${esc(comparison.incumbent_label)} 用同一批 ${comparison.calibration_rows} 条校准样本比较（${datetime(comparison.compared_at)}）：
+      候选保留正确率 ${candidate.calibrated ? percent(candidate.accepted_accuracy) : '—'} · 覆盖率 ${candidate.calibrated ? percent(candidate.coverage) : '—'}；
+      现用保留正确率 ${incumbent.calibrated ? percent(incumbent.accepted_accuracy) : '—'} · 覆盖率 ${incumbent.calibrated ? percent(incumbent.coverage) : '—'}。</p>` :
+      '<p class="muted">首个模型版本，无对照记录。</p>'}
+    ${row.stale ? '<p class="empty error">现用模型已更换，发布前须用同一批校准样本重新比较。</p>' : ''}
+    ${row.state === 'candidate' && !metrics.calibrated ? '<p class="empty">校准未达标，不能发布。</p>' : ''}
+    ${editable && row.state === 'candidate' && metrics.calibrated && !row.stale ?
+      `<form class="model-action" data-action="publish" data-id="${row.id}">${formEnd(`发布 ${esc(row.label)} 为现用模型`)}</form>` : ''}
+    ${editable && row.state === 'candidate' && row.stale ?
+      `<form class="model-action" data-action="compare" data-id="${row.id}">${formEnd('按当前现用模型重新比较')}</form>` : ''}
+    <details><summary>训练参数</summary><p class="mono digest">${esc(JSON.stringify(row.parameters))}</p></details></li>`;
+}
+
+function models(root, refresh) {
+  const editable = store.session.user.role === 'supervisor';
+  root.innerHTML = `${header('判级模型版本', '候选模型与现用模型用同一批校准样本比较；校准达标且比较未过期才可发布。已送审的审核单仍按送审时生效的模型计算。',
+    `<div class="header-actions"><a class="button quiet" href="#/blends/policy">阈值版本</a><a class="button quiet" href="#/blends">返回拼配台账</a></div>`)}
+    <div class="work-grid"><section class="paper"><h2>版本记录</h2><ul class="model-list">${store.models.map(row => modelRow(row, editable)).join('') || '<li>等待主管训练首个模型。</li>'}</ul></section>
+    ${editable ? `<form id="model-form" class="paper form-stack"><h2>训练候选模型</h2>
+      <p class="muted">校准样本固定为同一批验证集；达标线：保留至少 25 条且保留集正确率至少 90%。</p>
+      ${field('树数量（10–400）', 'n_estimators', '70', 'type="number" min="10" max="400" step="1"')}
+      ${field('最大深度（1–6）', 'max_depth', '2', 'type="number" min="1" max="6" step="1"')}
+      ${field('学习率（0.01–1.00）', 'learning_rate', '0.09', 'type="number" min="0.01" max="1" step="0.01"')}
+      ${field('随机种子（0–9999）', 'random_state', '67', 'type="number" min="0" max="9999" step="1"')}
+      ${formEnd('训练并与现用模型比较')}</form>` : ''}</div>`;
+  const form = root.querySelector('#model-form');
+  if (form) handle(form, item => {
+    const data = formData(item);
+    for (const key of ['n_estimators', 'max_depth', 'random_state', 'learning_rate']) data[key] = Number(data[key]);
+    return request('/models/compare', data);
+  }, () => refresh('候选模型已训练并完成比较。'));
+  root.querySelectorAll('.model-action').forEach(action => handle(action, item =>
+    request(`/models/${item.dataset.id}/${item.dataset.action}`, {}), () => refresh('模型版本已更新。')));
+}
+
 export function blends(root, id, refresh) {
   const user = store.session.user;
   if (id === 'policy') return policy(root, refresh);
+  if (id === 'models') return models(root, refresh);
   const edit = typeof id === 'string' && id.startsWith('edit-') ? store.blends.find(row => row.id === Number(id.slice(5))) : null;
   if (user.role === 'operator' && (id === 'new' || edit?.author_id === user.id && !edit.review)) return editor(edit, root, refresh);
   const selected = store.blends.find(row => row.id === id) || store.blends[0];
   root.innerHTML = `${header('拼配等级审核', '查看配方组成、盲复评队列及双人签发记录。', `<div class="header-actions">
-    <a class="button quiet" href="#/blends/policy">阈值版本</a>${user.role === 'operator' ? '<a class="button" href="#/blends/new">新建拼配</a>' : ''}</div>`)}
+    <a class="button quiet" href="#/blends/models">模型版本</a><a class="button quiet" href="#/blends/policy">阈值版本</a>${user.role === 'operator' ? '<a class="button" href="#/blends/new">新建拼配</a>' : ''}</div>`)}
     <div class="review-grid"><aside class="paper review-index"><h2>拼配台账</h2><ul>${store.blends.map(row =>
       `<li><a class="${row.id === selected?.id ? 'active' : ''}" href="#/blends/${row.id}"><span><small>${esc(row.code)}</small>
       <strong>${esc(row.name)}</strong></span>${status(row.review?.state)}</a></li>`).join('') || '<li class="empty">新建首个拼配配方。</li>'}</ul></aside>
